@@ -1,6 +1,5 @@
 import express from "express";
 import pg from "pg";
-const { Pool } = pg;
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -11,10 +10,10 @@ app.use(express.json());
 const isPostgres = !!process.env.DATABASE_URL;
 
 let db: any;
-let pool: Pool | null = null;
+let pool: pg.Pool | null = null;
 
 if (isPostgres) {
-  pool = new Pool({
+  pool = new pg.Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false }
   });
