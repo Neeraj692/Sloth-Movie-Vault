@@ -63,66 +63,33 @@ if (isPostgres) {
 
 app.post("/api/movies/add", async (req, res) => {
   try {
-    const { url } = req.body;
-    if (!url) return res.status(400).json({ error: "URL is required" });
+    const { id, title, poster_path, vote_average, release_date, overview, genres, imdb_id } = req.body;
+    
+    if (!id) return res.status(400).json({ error: "Movie ID is required" });
 
-    const match = url.match(/title\/(tt\d+)/);
-    if (!match) return res.status(400).json({ error: "Invalid IMDb URL. Expected format: https://www.imdb.com/title/tt1234567/" });
-
-    const imdbId = match[1];
+    const movieId = imdb_id || id.toString();
 
     if (isPostgres) {
-      const existing = await pool!.query("SELECT * FROM Movies WHERE Id = $1", [imdbId]);
+      const existing = await pool!.query("SELECT * FROM Movies WHERE Id = $1", [movieId]);
       if (existing.rows.length > 0) return res.status(400).json({ error: "Movie already in watchlist" });
     } else {
       if (!db) return res.status(500).json({ error: "Database not initialized" });
-      const existing = db.prepare("SELECT * FROM Movies WHERE Id = ?").get(imdbId);
+      const existing = db.prepare("SELECT * FROM Movies WHERE Id = ?").get(movieId);
       if (existing) return res.status(400).json({ error: "Movie already in watchlist" });
     }
 
-    const apiKey = process.env.TMDB_API_KEY || "614552faab6649681934deb55ec2004b";
-    
-    const findRes = await fetch(`https://api.themoviedb.org/3/find/${imdbId}?api_key=${apiKey}&external_source=imdb_id`);
-    const findData = await findRes.json();
-    
-    let data = null;
-    let mediaType = 'movie';
-    
-    if (findData.movie_results && findData.movie_results.length > 0) {
-      data = findData.movie_results[0];
-    } else if (findData.tv_results && findData.tv_results.length > 0) {
-      data = findData.tv_results[0];
-      mediaType = 'tv';
-    }
-
-    if (!data) {
-      return res.status(400).json({ error: "Movie or TV show not found on TMDB." });
-    }
-    
-    // Fetch full details to get genres
-    const detailsRes = await fetch(`https://api.themoviedb.org/3/${mediaType}/${data.id}?api_key=${apiKey}`);
-    const detailsData = await detailsRes.json();
-    
-    let imdbRating = detailsData.vote_average ? detailsData.vote_average.toFixed(1) : "N/A";
-    
-    try {
-      const omdbRes = await fetch(`https://www.omdbapi.com/?i=${imdbId}&apikey=trilogy`);
-      const omdbData = await omdbRes.json();
-      if (omdbData.imdbRating && omdbData.imdbRating !== "N/A") {
-        imdbRating = omdbData.imdbRating;
-      }
-    } catch (e) {
-      console.error("OMDB fetch error:", e);
-    }
+    const posterUrl = poster_path ? (poster_path.startsWith('http') ? poster_path : `https://image.tmdb.org/t/p/w500${poster_path}`) : "";
+    const year = release_date ? release_date.substring(0, 4) : "N/A";
+    const genreStr = genres ? (Array.isArray(genres) ? genres.map((g: any) => g.name || g).join(', ') : genres) : "N/A";
 
     const values = [
-      imdbId,
-      detailsData.title || detailsData.name || "Unknown Title",
-      detailsData.poster_path ? `https://image.tmdb.org/t/p/w500${detailsData.poster_path}` : "",
-      imdbRating,
-      (detailsData.release_date || detailsData.first_air_date) ? (detailsData.release_date || detailsData.first_air_date).substring(0, 4) : "N/A",
-      detailsData.genres ? detailsData.genres.map((g: any) => g.name).join(', ') : "N/A",
-      detailsData.overview || ""
+      movieId,
+      title || "Unknown Title",
+      posterUrl,
+      vote_average ? vote_average.toString() : "N/A",
+      year,
+      genreStr,
+      overview || ""
     ];
 
     if (isPostgres) {
@@ -139,7 +106,7 @@ app.post("/api/movies/add", async (req, res) => {
         VALUES (?, ?, ?, ?, ?, ?, ?, 0, '')
       `);
       stmt.run(...values);
-      const newMovie = db.prepare("SELECT * FROM Movies WHERE Id = ?").get(imdbId);
+      const newMovie = db.prepare("SELECT * FROM Movies WHERE Id = ?").get(movieId);
       res.json(newMovie);
     }
   } catch (error) {

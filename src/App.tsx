@@ -643,25 +643,58 @@ export default function App() {
     migrateMovies();
   }, []);
 
-  const addToWatchlist = (movie: Movie) => {
+  const addToWatchlist = async (movie: Movie) => {
     if (!watchlist.find(m => m.id === movie.id)) {
       setWatchlist([...watchlist, movie]);
+      try {
+        await fetch('/api/movies/add', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(movie)
+        });
+      } catch (e) {
+        console.error("Failed to add to database", e);
+      }
     }
   };
 
-  const removeFromWatchlist = (id: number) => {
+  const removeFromWatchlist = async (id: number) => {
     setWatchlist(watchlist.filter(m => m.id !== id));
+    try {
+      const movie = watchlist.find(m => m.id === id);
+      const movieId = (movie as any)?.imdb_id || id.toString();
+      await fetch(`/api/movies/${movieId}`, { method: 'DELETE' });
+    } catch (e) {
+      console.error("Failed to remove from database", e);
+    }
   };
 
-  const markAsWatched = (movie: Movie) => {
+  const markAsWatched = async (movie: Movie) => {
     if (!watched.find(m => m.id === movie.id)) {
       setWatched([movie, ...watched]);
       removeFromWatchlist(movie.id);
+      try {
+        const movieId = (movie as any).imdb_id || movie.id.toString();
+        await fetch('/api/movies/watch-status', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: movieId, watched: true })
+        });
+      } catch (e) {
+        console.error("Failed to mark as watched in database", e);
+      }
     }
   };
 
-  const removeFromWatched = (id: number) => {
+  const removeFromWatched = async (id: number) => {
     setWatched(watched.filter(m => m.id !== id));
+    try {
+      const movie = watched.find(m => m.id === id);
+      const movieId = (movie as any)?.imdb_id || id.toString();
+      await fetch(`/api/movies/${movieId}`, { method: 'DELETE' });
+    } catch (e) {
+      console.error("Failed to remove from database", e);
+    }
   };
 
   const isWatchlisted = (id: number) => !!watchlist.find(m => m.id === id);
