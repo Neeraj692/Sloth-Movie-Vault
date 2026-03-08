@@ -5,61 +5,81 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 const isPostgres = !!process.env.DATABASE_URL;
 
 let db: any;
 let pool: pg.Pool | null = null;
+let dbInitialized = false;
 
-if (isPostgres) {
-  pool = new pg.Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false }
-  });
+async function initDb() {
+  if (dbInitialized) return;
+  
+  if (isPostgres) {
+    if (!pool) {
+      pool = new pg.Pool({
+        connectionString: process.env.DATABASE_URL,
+        ssl: { rejectUnauthorized: false }
+      });
 
-  pool.on('error', (err) => {
-    console.error('Unexpected error on idle PostgreSQL client', err);
-  });
+      pool.on('error', (err) => {
+        console.error('Unexpected error on idle PostgreSQL client', err);
+      });
+    }
 
-  pool.query(`
-    CREATE TABLE IF NOT EXISTS Movies (
-      Id VARCHAR(50) PRIMARY KEY,
-      Title VARCHAR(255),
-      PosterUrl TEXT,
-      ImdbRating VARCHAR(10),
-      Year VARCHAR(10),
-      Genre VARCHAR(255),
-      Description TEXT,
-      Watched INTEGER DEFAULT 0,
-      Remark TEXT
-    )
-  `).then(() => console.log("PostgreSQL Database initialized"))
-    .catch(err => console.error("Error initializing PostgreSQL database:", err));
-} else {
-  // Only import better-sqlite3 if not using Postgres (to avoid Vercel build issues)
-  import("better-sqlite3").then((Database) => {
     try {
-      db = new Database.default("movievault.db");
-      db.exec(`
+      await pool.query(`
         CREATE TABLE IF NOT EXISTS Movies (
-          Id TEXT PRIMARY KEY,
+          Id VARCHAR(50) PRIMARY KEY,
           Title TEXT,
           PosterUrl TEXT,
-          ImdbRating TEXT,
-          Year TEXT,
+          ImdbRating VARCHAR(10),
+          Year VARCHAR(10),
           Genre TEXT,
           Description TEXT,
           Watched INTEGER DEFAULT 0,
           Remark TEXT
         )
       `);
-      console.log("SQLite Database initialized");
-    } catch (e) {
-      console.error("SQLite initialization failed.", e);
+      console.log("PostgreSQL Database initialized");
+      dbInitialized = true;
+    } catch (err) {
+      console.error("Error initializing PostgreSQL database:", err);
     }
-  }).catch(e => console.error("Failed to load better-sqlite3", e));
+  } else {
+    if (!db) {
+      // Only import better-sqlite3 if not using Postgres
+      try {
+        const Database = await import("better-sqlite3");
+        db = new Database.default("movievault.db");
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS Movies (
+            Id TEXT PRIMARY KEY,
+            Title TEXT,
+            PosterUrl TEXT,
+            ImdbRating TEXT,
+            Year TEXT,
+            Genre TEXT,
+            Description TEXT,
+            Watched INTEGER DEFAULT 0,
+            Remark TEXT
+          )
+        `);
+        console.log("SQLite Database initialized");
+        dbInitialized = true;
+      } catch (e) {
+        console.error("SQLite initialization failed.", e);
+      }
+    }
+  }
 }
+
+app.use(async (req, res, next) => {
+  await initDb();
+  next();
+});
 
 app.post("/api/movies/add", async (req, res) => {
   try {
