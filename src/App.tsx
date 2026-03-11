@@ -2,20 +2,21 @@ import React, { useEffect, useState, useRef } from 'react';
 import { Routes, Route, useParams, useNavigate, Link } from 'react-router-dom';
 import { Film, Check, Trash2, Plus, Star, Search, Play, X, Calendar, Clock, Info, Users, Share2, MessageCircle, Tv } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { SearchResults } from './components/SearchResults';
 
 interface Movie {
   id: string;
-  imdb_id: string;
+  imdb_id?: string;
   title: string;
-  poster_url: string;
-  imdb_rating: string;
-  year: string;
-  genre: string;
-  runtime: number;
-  overview: string;
-  status: string;
-  remark: string;
-  added_date: string;
+  poster_url?: string;
+  imdb_rating?: string;
+  year?: string;
+  genre?: string;
+  runtime?: number;
+  overview?: string;
+  status?: string;
+  remark?: string;
+  added_date?: string;
 }
 
 function Watchlist() {
@@ -30,40 +31,27 @@ function Watchlist() {
   const [isFetchingTrailer, setIsFetchingTrailer] = useState(false);
   const [activeTab, setActiveTab] = useState<'wishlist' | 'watched'>('wishlist');
   const [searchQuery, setSearchQuery] = useState('');
-  const [suggestions, setSuggestions] = useState<any[]>([]);
+  const [globalSearchResults, setGlobalSearchResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
-  const [showSuggestions, setShowSuggestions] = useState(false);
   const searchRef = useRef<HTMLFormElement>(null);
 
   useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (searchRef.current && !searchRef.current.contains(event.target as Node)) {
-        setShowSuggestions(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  useEffect(() => {
     const delayDebounceFn = setTimeout(async () => {
-      if (newMovieQuery.trim().length > 2) {
+      if (newMovieQuery.trim().length > 0) {
         setIsSearching(true);
         try {
           const res = await fetch(`/api/search?q=${encodeURIComponent(newMovieQuery)}`);
           const data = await res.json();
-          setSuggestions(data.slice(0, 5));
-          setShowSuggestions(true);
+          setGlobalSearchResults(data);
         } catch (error) {
           console.error("Search error", error);
         } finally {
           setIsSearching(false);
         }
       } else {
-        setSuggestions([]);
-        setShowSuggestions(false);
+        setGlobalSearchResults([]);
       }
-    }, 300);
+    }, 500);
 
     return () => clearTimeout(delayDebounceFn);
   }, [newMovieQuery]);
@@ -151,7 +139,6 @@ function Watchlist() {
   const handleAddMovie = async (tmdbId: string) => {
     if (isAdding || !username) return;
     setIsAdding(true);
-    setShowSuggestions(false);
     setNewMovieQuery('');
     try {
       const res = await fetch(`/api/users/${username}/movies`, {
@@ -248,10 +235,6 @@ function Watchlist() {
                   handleAddMovie(imdbMatch[0]);
                   return;
                 }
-
-                if (suggestions.length > 0 && query.length > 2) {
-                  handleAddMovie(suggestions[0].id.toString());
-                }
               }}
             >
               <div className="relative flex-1">
@@ -263,60 +246,10 @@ function Watchlist() {
                   value={newMovieQuery}
                   onChange={(e) => {
                     setNewMovieQuery(e.target.value);
-                    setShowSuggestions(true);
-                  }}
-                  onFocus={() => {
-                    if (newMovieQuery.trim().length > 2) setShowSuggestions(true);
                   }}
                   placeholder="Search movies to add..."
                   className="w-full pl-10 pr-4 py-2 bg-white/5 border border-white/10 rounded-full text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-yellow-500/50 focus:border-yellow-500 transition-all"
                 />
-                
-                {/* Autocomplete Dropdown */}
-                <AnimatePresence>
-                  {showSuggestions && (newMovieQuery.trim().length > 2) && (
-                    <motion.div 
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: 10 }}
-                      className="absolute top-full left-0 right-0 mt-2 bg-[#141414] border border-white/10 rounded-xl shadow-2xl overflow-hidden z-50"
-                    >
-                      {isSearching ? (
-                        <div className="p-4 flex justify-center">
-                          <div className="w-5 h-5 border-2 border-yellow-500/30 border-t-yellow-500 rounded-full animate-spin" />
-                        </div>
-                      ) : suggestions.length > 0 ? (
-                        <div className="max-h-80 overflow-y-auto custom-scrollbar">
-                          {suggestions.map((movie) => (
-                            <button
-                              key={movie.id}
-                              type="button"
-                              onClick={() => handleAddMovie(movie.id.toString())}
-                              className="w-full text-left p-3 hover:bg-white/5 flex gap-3 items-center transition-colors border-b border-white/5 last:border-0 group"
-                            >
-                              {movie.poster_path ? (
-                                <img src={`https://image.tmdb.org/t/p/w92${movie.poster_path}`} alt={movie.title} className="w-10 h-14 object-cover rounded bg-zinc-800" />
-                              ) : (
-                                <div className="w-10 h-14 bg-zinc-800 rounded flex items-center justify-center">
-                                  <Film className="w-4 h-4 text-zinc-500" />
-                                </div>
-                              )}
-                              <div className="flex-1 min-w-0">
-                                <h4 className="text-white text-sm font-bold truncate">{movie.title}</h4>
-                                <p className="text-zinc-500 text-xs">{movie.release_date ? movie.release_date.substring(0, 4) : 'N/A'}</p>
-                              </div>
-                              <Plus className="w-4 h-4 text-zinc-500 group-hover:text-yellow-500" />
-                            </button>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="p-4 text-center text-zinc-500 text-sm">
-                          No movies found
-                        </div>
-                      )}
-                    </motion.div>
-                  )}
-                </AnimatePresence>
               </div>
             </form>
             
@@ -332,8 +265,19 @@ function Watchlist() {
         </div>
       </header>
 
-      {/* Hero Section */}
-      {!loading && featuredMovie && (
+      {newMovieQuery.trim().length > 0 ? (
+        <main className="max-w-7xl mx-auto px-6 py-12">
+          <SearchResults 
+            keyword={newMovieQuery.trim()} 
+            results={globalSearchResults} 
+            isLoading={isSearching} 
+            onMovieClick={handleMovieClick} 
+          />
+        </main>
+      ) : (
+        <>
+          {/* Hero Section */}
+          {!loading && featuredMovie && (
         <div className="relative w-full h-[60vh] min-h-[400px] max-h-[600px] bg-[#0a0a0a] overflow-hidden border-b border-white/5">
           <div className="absolute inset-0">
             {featuredMovie.poster_url && (
@@ -538,12 +482,14 @@ function Watchlist() {
             <h3 className="text-2xl font-bold text-white mb-2">This list is empty</h3>
             <p className="text-zinc-500 max-w-md mx-auto mb-8">
               {activeTab === 'wishlist' 
-                ? "Start building your wishlist by pasting an IMDb link or TMDB ID above."
+                ? "Start building your wishlist by searching for movies above."
                 : "You haven't marked any movies as watched yet."}
             </p>
           </motion.div>
         )}
       </main>
+      </>
+      )}
 
       {/* Movie Details Modal */}
       <AnimatePresence>
@@ -626,10 +572,10 @@ function Watchlist() {
                         </span>
                       )}
                       
-                      {(extendedDetails?.runtime > 0 || selectedMovie.runtime > 0) && (
+                      {(extendedDetails?.runtime > 0 || (selectedMovie.runtime && selectedMovie.runtime > 0)) && (
                         <span className="flex items-center gap-1.5">
                           <Clock className="w-4 h-4 text-zinc-500" />
-                          {Math.floor((extendedDetails?.runtime || selectedMovie.runtime) / 60)}h {(extendedDetails?.runtime || selectedMovie.runtime) % 60}m
+                          {Math.floor((extendedDetails?.runtime || selectedMovie.runtime || 0) / 60)}h {(extendedDetails?.runtime || selectedMovie.runtime || 0) % 60}m
                         </span>
                       )}
 
@@ -718,24 +664,41 @@ function Watchlist() {
                     )}
 
                     <div className="flex flex-wrap gap-4">
-                      <button
-                        onClick={() => toggleStatus(selectedMovie)}
-                        className={`flex items-center gap-2 px-6 py-3 rounded-full font-bold transition-all shadow-lg ${
-                          selectedMovie.status === 'watched'
-                            ? 'bg-white/10 text-white border border-white/10 hover:bg-white/20'
-                            : 'bg-yellow-500 text-black hover:bg-yellow-400 shadow-yellow-500/20'
-                        }`}
-                      >
-                        {selectedMovie.status === 'watched' ? <Plus className="w-5 h-5" /> : <Check className="w-5 h-5" />}
-                        {selectedMovie.status === 'watched' ? 'Move to Wishlist' : 'Mark as Watched'}
-                      </button>
-                      <button
-                        onClick={() => deleteMovie(selectedMovie.id)}
-                        className="flex items-center gap-2 px-6 py-3 rounded-full font-bold bg-red-500/10 border border-red-500/20 text-red-400 hover:bg-red-500 hover:text-white transition-all"
-                      >
-                        <Trash2 className="w-5 h-5" />
-                        Remove from Vault
-                      </button>
+                      {movies.find(m => m.id === selectedMovie.id) ? (
+                        <>
+                          <button
+                            onClick={() => toggleStatus(movies.find(m => m.id === selectedMovie.id)!)}
+                            className={`flex items-center gap-2 px-6 py-3 rounded-full font-bold transition-all shadow-lg ${
+                              movies.find(m => m.id === selectedMovie.id)?.status === 'watched'
+                                ? 'bg-white/10 text-white border border-white/10 hover:bg-white/20'
+                                : 'bg-yellow-500 text-black hover:bg-yellow-400 shadow-yellow-500/20'
+                            }`}
+                          >
+                            {movies.find(m => m.id === selectedMovie.id)?.status === 'watched' ? <Plus className="w-5 h-5" /> : <Check className="w-5 h-5" />}
+                            {movies.find(m => m.id === selectedMovie.id)?.status === 'watched' ? 'Move to Wishlist' : 'Mark as Watched'}
+                          </button>
+                          <button
+                            onClick={() => deleteMovie(selectedMovie.id)}
+                            className="flex items-center gap-2 px-6 py-3 rounded-full font-bold bg-red-500/10 border border-red-500/20 text-red-400 hover:bg-red-500 hover:text-white transition-all"
+                          >
+                            <Trash2 className="w-5 h-5" />
+                            Remove from Vault
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          onClick={() => handleAddMovie(selectedMovie.id)}
+                          disabled={isAdding}
+                          className="flex items-center gap-2 px-8 py-3 rounded-full font-bold bg-yellow-500 text-black hover:bg-yellow-400 shadow-lg shadow-yellow-500/20 transition-all disabled:opacity-50"
+                        >
+                          {isAdding ? (
+                            <div className="w-5 h-5 border-2 border-black/30 border-t-black rounded-full animate-spin" />
+                          ) : (
+                            <Plus className="w-5 h-5" />
+                          )}
+                          Add to Vault
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
