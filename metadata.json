@@ -1,5 +1,5 @@
 {
-  "name": "Sloth 🦥 MovieVault",
-  "description": "My Future Watchlist - A modern web app to store movies you want to watch.",
+  "name": "Movie Vault",
+  "description": "A movie tracking application that fetches data from Neon DB.",
   "requestFramePermissions": []
 }

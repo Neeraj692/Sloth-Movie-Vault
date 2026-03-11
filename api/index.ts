@@ -8,194 +8,205 @@ const app = express();
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-const isPostgres = !!process.env.DATABASE_URL;
-
-let db: any;
-let pool: pg.Pool | null = null;
-let dbInitialized = false;
-
-async function initDb() {
-  if (dbInitialized) return;
-  
-  if (isPostgres) {
-    if (!pool) {
-      pool = new pg.Pool({
-        connectionString: process.env.DATABASE_URL,
-        ssl: { rejectUnauthorized: false }
-      });
-
-      pool.on('error', (err) => {
-        console.error('Unexpected error on idle PostgreSQL client', err);
-      });
-    }
-
-    try {
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS Movies (
-          Id VARCHAR(50) PRIMARY KEY,
-          Title TEXT,
-          PosterUrl TEXT,
-          ImdbRating VARCHAR(10),
-          Year VARCHAR(10),
-          Genre TEXT,
-          Description TEXT,
-          Watched INTEGER DEFAULT 0,
-          Remark TEXT
-        )
-      `);
-      console.log("PostgreSQL Database initialized");
-      dbInitialized = true;
-    } catch (err) {
-      console.error("Error initializing PostgreSQL database:", err);
-    }
-  } else {
-    if (!db) {
-      // Only import better-sqlite3 if not using Postgres
-      try {
-        const Database = await import("better-sqlite3");
-        db = new Database.default("movievault.db");
-        db.exec(`
-          CREATE TABLE IF NOT EXISTS Movies (
-            Id TEXT PRIMARY KEY,
-            Title TEXT,
-            PosterUrl TEXT,
-            ImdbRating TEXT,
-            Year TEXT,
-            Genre TEXT,
-            Description TEXT,
-            Watched INTEGER DEFAULT 0,
-            Remark TEXT
-          )
-        `);
-        console.log("SQLite Database initialized");
-        dbInitialized = true;
-      } catch (e) {
-        console.error("SQLite initialization failed.", e);
-      }
-    }
-  }
+if (!process.env.DATABASE_URL) {
+  console.error("DATABASE_URL environment variable is missing. Please set it to connect to Neon DB.");
 }
 
-app.use(async (req, res, next) => {
-  await initDb();
-  next();
+const pool = new pg.Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
 });
 
-app.post("/api/movies/add", async (req, res) => {
+pool.on('error', (err) => {
+  console.error('Unexpected error on idle PostgreSQL client', err);
+});
+
+pool.query(`
+  CREATE TABLE IF NOT EXISTS Users (
+    id SERIAL PRIMARY KEY,
+    username VARCHAR(255) UNIQUE NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS Movies (
+    id VARCHAR(50) PRIMARY KEY,
+    imdb_id VARCHAR(50),
+    title TEXT NOT NULL,
+    poster_url TEXT,
+    imdb_rating VARCHAR(50),
+    year VARCHAR(50),
+    genre TEXT,
+    runtime INTEGER,
+    overview TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS UserMovies (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES Users(id) ON DELETE CASCADE,
+    movie_id VARCHAR(50) REFERENCES Movies(id) ON DELETE CASCADE,
+    status VARCHAR(50) DEFAULT 'wishlist',
+    remark TEXT,
+    added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, movie_id)
+  );
+
+`).then(() => console.log("PostgreSQL Database initialized"))
+  .catch(err => console.error("Error initializing PostgreSQL database:", err));
+
+const TMDB_API_KEY = process.env.VITE_TMDB_API_KEY;
+
+// Get or create user
+async function getOrCreateUser(username: string) {
+  const normalizedUsername = username.toLowerCase().trim();
+  let userRes = await pool.query("SELECT id FROM Users WHERE username = $1", [normalizedUsername]);
+  if (userRes.rows.length === 0) {
+    userRes = await pool.query("INSERT INTO Users (username) VALUES ($1) RETURNING id", [normalizedUsername]);
+  }
+  return userRes.rows[0].id;
+}
+
+app.get("/api/search", async (req, res) => {
   try {
-    const { id, title, poster_path, vote_average, release_date, overview, genres, imdb_id } = req.body;
+    const { q } = req.query;
+    if (!q || !TMDB_API_KEY) return res.json([]);
+    const searchRes = await fetch(`https://api.themoviedb.org/3/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(q as string)}&page=1`);
+    const searchData = await searchRes.json();
+    res.json(searchData.results || []);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to search movies" });
+  }
+});
+
+app.post("/api/users/:username/movies", async (req, res) => {
+  try {
+    const { username } = req.params;
+    const { movieId } = req.body; 
     
-    if (!id) return res.status(400).json({ error: "Movie ID is required" });
+    if (!movieId) return res.status(400).json({ error: "Movie ID is required" });
 
-    const movieId = imdb_id || id.toString();
-
-    if (isPostgres) {
-      const existing = await pool!.query("SELECT * FROM Movies WHERE Id = $1", [movieId]);
-      if (existing.rows.length > 0) return res.status(400).json({ error: "Movie already in watchlist" });
-    } else {
-      if (!db) return res.status(500).json({ error: "Database not initialized" });
-      const existing = db.prepare("SELECT * FROM Movies WHERE Id = ?").get(movieId);
-      if (existing) return res.status(400).json({ error: "Movie already in watchlist" });
+    const userId = await getOrCreateUser(username);
+    
+    // Fetch from TMDB to populate Movies table
+    if (TMDB_API_KEY) {
+      try {
+        const tmdbRes = await fetch(`https://api.themoviedb.org/3/movie/${movieId}?api_key=${TMDB_API_KEY}&append_to_response=credits`);
+        if (tmdbRes.ok) {
+          const tmdbData = await tmdbRes.json();
+          
+          // Insert into Movies table
+          await pool.query(`
+            INSERT INTO Movies (id, imdb_id, title, poster_url, imdb_rating, year, genre, runtime, overview)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (id) DO NOTHING
+          `, [
+            tmdbData.id.toString(),
+            tmdbData.imdb_id,
+            tmdbData.title,
+            tmdbData.poster_path ? `https://image.tmdb.org/t/p/w500${tmdbData.poster_path}` : "",
+            tmdbData.vote_average ? `⭐ ${tmdbData.vote_average.toFixed(1)} / 10` : "N/A",
+            tmdbData.release_date ? tmdbData.release_date.substring(0, 4) : "N/A",
+            tmdbData.genres ? tmdbData.genres.map((g: any) => g.name).join(', ') : "N/A",
+            tmdbData.runtime || 0,
+            tmdbData.overview || ""
+          ]);
+        }
+      } catch (err) {
+        console.error("Error fetching/saving movie details:", err);
+        // Continue even if TMDB fetch fails, we'll just save the ID
+      }
     }
 
-    const posterUrl = poster_path ? (poster_path.startsWith('http') ? poster_path : `https://image.tmdb.org/t/p/w500${poster_path}`) : "";
-    const year = release_date ? release_date.substring(0, 4) : "N/A";
-    const genreStr = genres ? (Array.isArray(genres) ? genres.map((g: any) => g.name || g).join(', ') : genres) : "N/A";
-
-    const values = [
-      movieId,
-      title || "Unknown Title",
-      posterUrl,
-      vote_average ? vote_average.toString() : "N/A",
-      year,
-      genreStr,
-      overview || ""
-    ];
-
-    if (isPostgres) {
-      const query = `
-        INSERT INTO Movies (Id, Title, PosterUrl, ImdbRating, Year, Genre, Description, Watched, Remark)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, 0, '')
-        RETURNING *
-      `;
-      const result = await pool!.query(query, values);
-      res.json(result.rows[0]);
-    } else {
-      const stmt = db.prepare(`
-        INSERT INTO Movies (Id, Title, PosterUrl, ImdbRating, Year, Genre, Description, Watched, Remark)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0, '')
-      `);
-      stmt.run(...values);
-      const newMovie = db.prepare("SELECT * FROM Movies WHERE Id = ?").get(movieId);
-      res.json(newMovie);
+    // Add to UserMovies
+    try {
+      await pool.query(`
+        INSERT INTO UserMovies (user_id, movie_id, status)
+        VALUES ($1, $2, 'wishlist')
+      `, [userId, movieId.toString()]);
+    } catch (err: any) {
+      if (err.code === '23505') { // unique violation
+        return res.status(400).json({ error: "Movie already in your watchlist" });
+      }
+      throw err;
     }
+
+    res.json({ success: true, movieId });
+  } catch (error: any) {
+    console.error("Error adding movie:", error);
+    res.status(500).json({ error: error.message || "Internal server error" });
+  }
+});
+
+app.get("/api/users/:username/movies", async (req, res) => {
+  try {
+    const { username } = req.params;
+    const userId = await getOrCreateUser(username);
+
+    const result = await pool.query(`
+      SELECT 
+        um.movie_id, um.status, um.remark, um.added_date,
+        m.imdb_id, m.title, m.poster_url, m.imdb_rating, m.year, m.genre, m.runtime, m.overview
+      FROM UserMovies um
+      LEFT JOIN Movies m ON um.movie_id = m.id
+      WHERE um.user_id = $1
+      ORDER BY um.added_date DESC
+    `, [userId]);
+
+    const movies = result.rows.map((row) => {
+      return {
+        id: row.movie_id,
+        imdb_id: row.imdb_id || "",
+        title: row.title || "Unknown Title",
+        poster_url: row.poster_url || "",
+        imdb_rating: row.imdb_rating || "N/A",
+        year: row.year || "N/A",
+        genre: row.genre || "N/A",
+        runtime: row.runtime || 0,
+        overview: row.overview || "",
+        status: row.status,
+        remark: row.remark,
+        added_date: row.added_date
+      };
+    });
+
+    res.json(movies);
   } catch (error) {
-    console.error(error);
+    console.error("Error fetching movies:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
 
-app.get("/api/movies", async (req, res) => {
+app.put("/api/users/:username/movies/:movieId/status", async (req, res) => {
   try {
-    if (isPostgres) {
-      const result = await pool!.query("SELECT * FROM Movies ORDER BY Id DESC");
-      res.json(result.rows);
-    } else {
-      if (!db) return res.status(500).json({ error: "Database not initialized" });
-      const movies = db.prepare("SELECT * FROM Movies ORDER BY rowid DESC").all();
-      res.json(movies);
-    }
-  } catch (error) {
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
+    const { username, movieId } = req.params;
+    const { status } = req.body; // 'wishlist' or 'watched'
+    const userId = await getOrCreateUser(username);
 
-app.get("/api/movies/:id", async (req, res) => {
-  try {
-    if (isPostgres) {
-      const result = await pool!.query("SELECT * FROM Movies WHERE Id = $1", [req.params.id]);
-      if (result.rows.length === 0) return res.status(404).json({ error: "Movie not found" });
-      res.json(result.rows[0]);
-    } else {
-      if (!db) return res.status(500).json({ error: "Database not initialized" });
-      const movie = db.prepare("SELECT * FROM Movies WHERE Id = ?").get(req.params.id);
-      if (!movie) return res.status(404).json({ error: "Movie not found" });
-      res.json(movie);
-    }
-  } catch (error) {
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
+    await pool.query(`
+      UPDATE UserMovies 
+      SET status = $1 
+      WHERE user_id = $2 AND movie_id = $3
+    `, [status, userId, movieId]);
 
-app.put("/api/movies/watch-status", async (req, res) => {
-  try {
-    const { id, watched, remark } = req.body;
-    if (isPostgres) {
-      const query = "UPDATE Movies SET Watched = $1, Remark = $2 WHERE Id = $3 RETURNING *";
-      const result = await pool!.query(query, [watched ? 1 : 0, remark || "", id]);
-      res.json(result.rows[0]);
-    } else {
-      if (!db) return res.status(500).json({ error: "Database not initialized" });
-      const stmt = db.prepare("UPDATE Movies SET Watched = ?, Remark = ? WHERE Id = ?");
-      stmt.run(watched ? 1 : 0, remark || "", id);
-      const updated = db.prepare("SELECT * FROM Movies WHERE Id = ?").get(id);
-      res.json(updated);
-    }
-  } catch (error) {
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-app.delete("/api/movies/:id", async (req, res) => {
-  try {
-    if (isPostgres) {
-      await pool!.query("DELETE FROM Movies WHERE Id = $1", [req.params.id]);
-    } else {
-      if (!db) return res.status(500).json({ error: "Database not initialized" });
-      db.prepare("DELETE FROM Movies WHERE Id = ?").run(req.params.id);
-    }
     res.json({ success: true });
   } catch (error) {
+    console.error("Error updating status:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+app.delete("/api/users/:username/movies/:movieId", async (req, res) => {
+  try {
+    const { username, movieId } = req.params;
+    const userId = await getOrCreateUser(username);
+
+    await pool.query(`
+      DELETE FROM UserMovies 
+      WHERE user_id = $1 AND movie_id = $2
+    `, [userId, movieId]);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Error deleting movie:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
