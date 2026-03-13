@@ -99,26 +99,6 @@ app.get("/api/search", async (req, res) => {
         }
 
         if (searchSuccess) {
-          // Store in Movies table in background (don't await the whole loop before returning)
-          Promise.all(results.map(async (movie: any) => {
-            try {
-              await pool.query(`
-                INSERT INTO Movies (id, title, poster_url, imdb_rating, year, overview)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                ON CONFLICT (id) DO NOTHING
-              `, [
-                movie.id.toString(),
-                movie.title,
-                movie.poster_path ? `https://image.tmdb.org/t/p/w500${movie.poster_path}` : null,
-                movie.vote_average ? Number(movie.vote_average).toFixed(1) : null,
-                movie.release_date ? movie.release_date.substring(0, 4) : null,
-                movie.overview || ''
-              ]);
-            } catch (e) {
-              console.error("Error inserting movie:", e);
-            }
-          })).catch(console.error);
-          
           return res.json(results.map((m: any) => ({
             id: m.id.toString(),
             title: m.title,
@@ -133,13 +113,8 @@ app.get("/api/search", async (req, res) => {
       }
     }
     
-    // Fallback to DB search if no TMDB API key or TMDB failed
-    const dbRes = await pool.query(
-      "SELECT * FROM Movies WHERE title ILIKE $1 LIMIT 20",
-      [`%${q}%`]
-    );
-    
-    res.json(dbRes.rows);
+    // User requested to ONLY search from API, so return empty array instead of DB fallback.
+    return res.json([]);
   } catch (error) {
     console.error("Search error:", error);
     res.status(500).json({ error: "Failed to search movies" });
@@ -285,6 +260,14 @@ app.delete("/api/users/:username/movies/:movieId", async (req, res) => {
       DELETE FROM UserMovies 
       WHERE user_id = $1 AND movie_id = $2
     `, [userId, movieId]);
+
+    // Delete from Movies if no other user has it in their watchlist
+    await pool.query(`
+      DELETE FROM Movies 
+      WHERE id = $1 AND NOT EXISTS (
+        SELECT 1 FROM UserMovies WHERE movie_id = $1
+      )
+    `, [movieId]);
 
     res.json({ success: true });
   } catch (error) {
