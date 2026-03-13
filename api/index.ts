@@ -73,11 +73,32 @@ app.get("/api/search", async (req, res) => {
     // If we have TMDB API key, always search TMDB for best results
     if (TMDB_API_KEY) {
       try {
-        const searchRes = await fetch(`https://api.themoviedb.org/3/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(q as string)}&page=1`);
-        if (searchRes.ok) {
-          const searchData = await searchRes.json();
-          const results = searchData.results || [];
-          
+        const queryStr = String(q).trim();
+        const isImdbId = /^tt\d+$/i.test(queryStr);
+        let results: any[] = [];
+        let searchSuccess = false;
+
+        if (isImdbId) {
+          const findRes = await fetch(`https://api.themoviedb.org/3/find/${queryStr}?api_key=${TMDB_API_KEY}&external_source=imdb_id`);
+          if (findRes.ok) {
+            const findData = await findRes.json();
+            results = findData.movie_results || [];
+            searchSuccess = true;
+          } else {
+            console.error("TMDB find failed with status:", findRes.status);
+          }
+        } else {
+          const searchRes = await fetch(`https://api.themoviedb.org/3/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(queryStr)}&page=1`);
+          if (searchRes.ok) {
+            const searchData = await searchRes.json();
+            results = searchData.results || [];
+            searchSuccess = true;
+          } else {
+            console.error("TMDB search failed with status:", searchRes.status);
+          }
+        }
+
+        if (searchSuccess) {
           // Store in Movies table in background (don't await the whole loop before returning)
           Promise.all(results.map(async (movie: any) => {
             try {
@@ -106,8 +127,6 @@ app.get("/api/search", async (req, res) => {
             year: m.release_date ? m.release_date.substring(0, 4) : null,
             overview: m.overview || ''
           })));
-        } else {
-          console.error("TMDB search failed with status:", searchRes.status);
         }
       } catch (err) {
         console.error("TMDB fetch error:", err);
