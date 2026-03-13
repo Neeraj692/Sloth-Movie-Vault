@@ -87,7 +87,7 @@ app.get("/api/search", async (req, res) => {
             movie.id.toString(),
             movie.title,
             movie.poster_path ? `https://image.tmdb.org/t/p/w500${movie.poster_path}` : null,
-            movie.vote_average ? movie.vote_average.toString() : null,
+            movie.vote_average ? Number(movie.vote_average).toFixed(1) : null,
             movie.release_date ? movie.release_date.substring(0, 4) : null,
             movie.overview || ''
           ]);
@@ -100,7 +100,7 @@ app.get("/api/search", async (req, res) => {
         id: m.id.toString(),
         title: m.title,
         poster_url: m.poster_path ? `https://image.tmdb.org/t/p/w500${m.poster_path}` : null,
-        imdb_rating: m.vote_average ? m.vote_average.toString() : null,
+        imdb_rating: m.vote_average ? Number(m.vote_average).toFixed(1) : null,
         year: m.release_date ? m.release_date.substring(0, 4) : null,
         overview: m.overview || ''
       })));
@@ -127,6 +127,7 @@ app.post("/api/users/:username/movies", async (req, res) => {
     if (!movieId) return res.status(400).json({ error: "Movie ID is required" });
 
     const userId = await getOrCreateUser(username);
+    let finalMovieId = movieId.toString();
     
     // Fetch from TMDB to populate Movies table
     if (TMDB_API_KEY) {
@@ -134,18 +135,24 @@ app.post("/api/users/:username/movies", async (req, res) => {
         const tmdbRes = await fetch(`https://api.themoviedb.org/3/movie/${movieId}?api_key=${TMDB_API_KEY}&append_to_response=credits`);
         if (tmdbRes.ok) {
           const tmdbData = await tmdbRes.json();
+          finalMovieId = tmdbData.id.toString();
           
           // Insert into Movies table
           await pool.query(`
             INSERT INTO Movies (id, imdb_id, title, poster_url, imdb_rating, year, genre, runtime, overview)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            ON CONFLICT (id) DO NOTHING
+            ON CONFLICT (id) DO UPDATE SET
+              imdb_id = EXCLUDED.imdb_id,
+              genre = EXCLUDED.genre,
+              runtime = EXCLUDED.runtime,
+              overview = EXCLUDED.overview,
+              imdb_rating = EXCLUDED.imdb_rating
           `, [
-            tmdbData.id.toString(),
+            finalMovieId,
             tmdbData.imdb_id,
             tmdbData.title,
             tmdbData.poster_path ? `https://image.tmdb.org/t/p/w500${tmdbData.poster_path}` : "",
-            tmdbData.vote_average ? `⭐ ${tmdbData.vote_average.toFixed(1)} / 10` : "N/A",
+            tmdbData.vote_average ? Number(tmdbData.vote_average).toFixed(1) : "N/A",
             tmdbData.release_date ? tmdbData.release_date.substring(0, 4) : "N/A",
             tmdbData.genres ? tmdbData.genres.map((g: any) => g.name).join(', ') : "N/A",
             tmdbData.runtime || 0,
@@ -163,7 +170,7 @@ app.post("/api/users/:username/movies", async (req, res) => {
       await pool.query(`
         INSERT INTO UserMovies (user_id, movie_id, status)
         VALUES ($1, $2, 'wishlist')
-      `, [userId, movieId.toString()]);
+      `, [userId, finalMovieId]);
     } catch (err: any) {
       if (err.code === '23505') { // unique violation
         return res.status(400).json({ error: "Movie already in your watchlist" });
@@ -171,7 +178,7 @@ app.post("/api/users/:username/movies", async (req, res) => {
       throw err;
     }
 
-    res.json({ success: true, movieId });
+    res.json({ success: true, movieId: finalMovieId });
   } catch (error: any) {
     console.error("Error adding movie:", error);
     res.status(500).json({ error: error.message || "Internal server error" });
@@ -194,12 +201,18 @@ app.get("/api/users/:username/movies", async (req, res) => {
     `, [userId]);
 
     const movies = result.rows.map((row) => {
+      // Clean up legacy rating format if present (e.g. "⭐ 8.5 / 10" -> "8.5")
+      let cleanRating = row.imdb_rating || "N/A";
+      if (cleanRating.includes('⭐')) {
+        cleanRating = cleanRating.replace('⭐ ', '').replace(' / 10', '');
+      }
+
       return {
         id: row.movie_id,
         imdb_id: row.imdb_id || "",
         title: row.title || "Unknown Title",
         poster_url: row.poster_url || "",
-        imdb_rating: row.imdb_rating || "N/A",
+        imdb_rating: cleanRating,
         year: row.year || "N/A",
         genre: row.genre || "N/A",
         runtime: row.runtime || 0,

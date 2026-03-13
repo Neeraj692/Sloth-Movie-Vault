@@ -52,10 +52,10 @@ export const MovieCard: React.FC<MovieCardProps> = ({ movie, onClick }) => {
         )}
 
         {/* Rating Badge */}
-        {movie.imdb_rating && (
+        {movie.imdb_rating && movie.imdb_rating !== 'N/A' && (
           <div className="absolute top-2 right-2 bg-black/80 backdrop-blur-md text-white px-2 py-1 rounded-md flex items-center gap-1 text-xs font-bold border border-white/10 shadow-lg">
             <Star className="w-3 h-3 text-yellow-500 fill-yellow-500" />
-            {movie.imdb_rating} Score
+            {Number(movie.imdb_rating.replace('⭐ ', '').split(' ')[0]).toFixed(1)}
           </div>
         )}
         
