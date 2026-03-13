@@ -70,52 +70,33 @@ app.get("/api/search", async (req, res) => {
     const { q } = req.query;
     if (!q) return res.json([]);
     
-    // 1. Search DB first
-    const dbRes = await pool.query(
-      "SELECT * FROM Movies WHERE title ILIKE $1 LIMIT 20",
-      [`%${q}%`]
-    );
-    
-    if (dbRes.rows.length > 0) {
-      return res.json(dbRes.rows);
-    }
-    
-    // 2. If not found, fetch from TMDB
-    if (!TMDB_API_KEY) return res.json([]);
-    const searchRes = await fetch(`https://api.themoviedb.org/3/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(q as string)}&page=1`);
-    const searchData = await searchRes.json();
-    const results = searchData.results || [];
-    
-    // 3. Store in Movies table
-    for (const movie of results) {
-      try {
-        await pool.query(`
-          INSERT INTO Movies (id, title, poster_url, imdb_rating, year, overview)
-          VALUES ($1, $2, $3, $4, $5, $6)
-          ON CONFLICT (id) DO NOTHING
-        `, [
-          movie.id.toString(),
-          movie.title,
-          movie.poster_path ? `https://image.tmdb.org/t/p/w500${movie.poster_path}` : null,
-          movie.vote_average ? movie.vote_average.toString() : null,
-          movie.release_date ? movie.release_date.substring(0, 4) : null,
-          movie.overview || ''
-        ]);
-      } catch (e) {
-        console.error("Error inserting movie:", e);
-      }
-    }
-    
-    // Return the newly fetched and stored results
-    const newDbRes = await pool.query(
-      "SELECT * FROM Movies WHERE title ILIKE $1 LIMIT 20",
-      [`%${q}%`]
-    );
-    
-    if (newDbRes.rows.length > 0) {
-      res.json(newDbRes.rows);
-    } else {
-      res.json(results.map((m: any) => ({
+    // If we have TMDB API key, always search TMDB for best results
+    if (TMDB_API_KEY) {
+      const searchRes = await fetch(`https://api.themoviedb.org/3/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(q as string)}&page=1`);
+      const searchData = await searchRes.json();
+      const results = searchData.results || [];
+      
+      // Store in Movies table in background (don't await the whole loop before returning)
+      Promise.all(results.map(async (movie: any) => {
+        try {
+          await pool.query(`
+            INSERT INTO Movies (id, title, poster_url, imdb_rating, year, overview)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (id) DO NOTHING
+          `, [
+            movie.id.toString(),
+            movie.title,
+            movie.poster_path ? `https://image.tmdb.org/t/p/w500${movie.poster_path}` : null,
+            movie.vote_average ? movie.vote_average.toString() : null,
+            movie.release_date ? movie.release_date.substring(0, 4) : null,
+            movie.overview || ''
+          ]);
+        } catch (e) {
+          console.error("Error inserting movie:", e);
+        }
+      })).catch(console.error);
+      
+      return res.json(results.map((m: any) => ({
         id: m.id.toString(),
         title: m.title,
         poster_url: m.poster_path ? `https://image.tmdb.org/t/p/w500${m.poster_path}` : null,
@@ -124,6 +105,14 @@ app.get("/api/search", async (req, res) => {
         overview: m.overview || ''
       })));
     }
+    
+    // Fallback to DB search if no TMDB API key
+    const dbRes = await pool.query(
+      "SELECT * FROM Movies WHERE title ILIKE $1 LIMIT 20",
+      [`%${q}%`]
+    );
+    
+    res.json(dbRes.rows);
   } catch (error) {
     console.error("Search error:", error);
     res.status(500).json({ error: "Failed to search movies" });
