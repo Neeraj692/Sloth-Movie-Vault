@@ -53,7 +53,7 @@ pool.query(`
 `).then(() => console.log("PostgreSQL Database initialized"))
   .catch(err => console.error("Error initializing PostgreSQL database:", err));
 
-const TMDB_API_KEY = process.env.VITE_TMDB_API_KEY;
+const TMDB_API_KEY = process.env.TMDB_API_KEY || process.env.VITE_TMDB_API_KEY;
 
 // Get or create user
 async function getOrCreateUser(username: string) {
@@ -72,41 +72,49 @@ app.get("/api/search", async (req, res) => {
     
     // If we have TMDB API key, always search TMDB for best results
     if (TMDB_API_KEY) {
-      const searchRes = await fetch(`https://api.themoviedb.org/3/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(q as string)}&page=1`);
-      const searchData = await searchRes.json();
-      const results = searchData.results || [];
-      
-      // Store in Movies table in background (don't await the whole loop before returning)
-      Promise.all(results.map(async (movie: any) => {
-        try {
-          await pool.query(`
-            INSERT INTO Movies (id, title, poster_url, imdb_rating, year, overview)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (id) DO NOTHING
-          `, [
-            movie.id.toString(),
-            movie.title,
-            movie.poster_path ? `https://image.tmdb.org/t/p/w500${movie.poster_path}` : null,
-            movie.vote_average ? Number(movie.vote_average).toFixed(1) : null,
-            movie.release_date ? movie.release_date.substring(0, 4) : null,
-            movie.overview || ''
-          ]);
-        } catch (e) {
-          console.error("Error inserting movie:", e);
+      try {
+        const searchRes = await fetch(`https://api.themoviedb.org/3/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(q as string)}&page=1`);
+        if (searchRes.ok) {
+          const searchData = await searchRes.json();
+          const results = searchData.results || [];
+          
+          // Store in Movies table in background (don't await the whole loop before returning)
+          Promise.all(results.map(async (movie: any) => {
+            try {
+              await pool.query(`
+                INSERT INTO Movies (id, title, poster_url, imdb_rating, year, overview)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (id) DO NOTHING
+              `, [
+                movie.id.toString(),
+                movie.title,
+                movie.poster_path ? `https://image.tmdb.org/t/p/w500${movie.poster_path}` : null,
+                movie.vote_average ? Number(movie.vote_average).toFixed(1) : null,
+                movie.release_date ? movie.release_date.substring(0, 4) : null,
+                movie.overview || ''
+              ]);
+            } catch (e) {
+              console.error("Error inserting movie:", e);
+            }
+          })).catch(console.error);
+          
+          return res.json(results.map((m: any) => ({
+            id: m.id.toString(),
+            title: m.title,
+            poster_url: m.poster_path ? `https://image.tmdb.org/t/p/w500${m.poster_path}` : null,
+            imdb_rating: m.vote_average ? Number(m.vote_average).toFixed(1) : null,
+            year: m.release_date ? m.release_date.substring(0, 4) : null,
+            overview: m.overview || ''
+          })));
+        } else {
+          console.error("TMDB search failed with status:", searchRes.status);
         }
-      })).catch(console.error);
-      
-      return res.json(results.map((m: any) => ({
-        id: m.id.toString(),
-        title: m.title,
-        poster_url: m.poster_path ? `https://image.tmdb.org/t/p/w500${m.poster_path}` : null,
-        imdb_rating: m.vote_average ? Number(m.vote_average).toFixed(1) : null,
-        year: m.release_date ? m.release_date.substring(0, 4) : null,
-        overview: m.overview || ''
-      })));
+      } catch (err) {
+        console.error("TMDB fetch error:", err);
+      }
     }
     
-    // Fallback to DB search if no TMDB API key
+    // Fallback to DB search if no TMDB API key or TMDB failed
     const dbRes = await pool.query(
       "SELECT * FROM Movies WHERE title ILIKE $1 LIMIT 20",
       [`%${q}%`]
@@ -202,7 +210,7 @@ app.get("/api/users/:username/movies", async (req, res) => {
 
     const movies = result.rows.map((row) => {
       // Clean up legacy rating format if present (e.g. "⭐ 8.5 / 10" -> "8.5")
-      let cleanRating = row.imdb_rating || "N/A";
+      let cleanRating = row.imdb_rating ? String(row.imdb_rating) : "N/A";
       if (cleanRating.includes('⭐')) {
         cleanRating = cleanRating.replace('⭐ ', '').replace(' / 10', '');
       }

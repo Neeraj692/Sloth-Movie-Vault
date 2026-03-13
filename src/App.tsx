@@ -318,7 +318,7 @@ function Watchlist() {
                 <div className="flex flex-wrap items-center gap-4 mb-6 text-sm font-medium text-zinc-400">
                   <div className="flex items-center gap-1 text-white font-bold bg-white/10 px-2 py-1 rounded-md border border-white/5">
                     <Star className="w-4 h-4 text-yellow-500 fill-yellow-500" />
-                    {featuredMovie.imdb_rating && featuredMovie.imdb_rating !== 'N/A' ? Number(featuredMovie.imdb_rating.replace('⭐ ', '').split(' ')[0]).toFixed(1) : 'NR'}
+                    {featuredMovie.imdb_rating && featuredMovie.imdb_rating !== 'N/A' ? Number(String(featuredMovie.imdb_rating).replace('⭐ ', '').split(' ')[0]).toFixed(1) : 'NR'}
                   </div>
                   <span>{featuredMovie.year}</span>
                   <span className="flex items-center gap-1.5">
@@ -458,7 +458,7 @@ function Watchlist() {
                   {/* Rating Badge */}
                   <div className="relative -mt-5 ml-3 z-10 w-10 h-10 rounded-full bg-[#0a0a0a] border border-white/10 flex items-center justify-center text-white font-bold text-xs shadow-lg group-hover:border-yellow-500/50 transition-colors">
                     <Star className="w-3 h-3 text-yellow-500 fill-yellow-500 absolute top-1" />
-                    <span className="mt-2">{movie.imdb_rating && movie.imdb_rating !== 'N/A' ? Number(movie.imdb_rating.replace('⭐ ', '').split(' ')[0]).toFixed(1) : 'NR'}</span>
+                    <span className="mt-2">{movie.imdb_rating && movie.imdb_rating !== 'N/A' ? Number(String(movie.imdb_rating).replace('⭐ ', '').split(' ')[0]).toFixed(1) : 'NR'}</span>
                   </div>
                   
                   {/* Title & Year */}
@@ -564,7 +564,7 @@ function Watchlist() {
                     <div className="flex flex-wrap items-center gap-4 text-sm font-medium text-zinc-300 mb-6">
                       <span className="flex items-center gap-1 text-white bg-white/10 border border-white/5 px-2 py-1 rounded-md font-bold">
                         <Star className="w-4 h-4 text-yellow-500 fill-yellow-500" />
-                        {selectedMovie.imdb_rating && selectedMovie.imdb_rating !== 'N/A' ? Number(selectedMovie.imdb_rating.replace('⭐ ', '').split(' ')[0]).toFixed(1) : 'NR'}
+                        {selectedMovie.imdb_rating && selectedMovie.imdb_rating !== 'N/A' ? Number(String(selectedMovie.imdb_rating).replace('⭐ ', '').split(' ')[0]).toFixed(1) : 'NR'}
                       </span>
                       
                       {extendedDetails?.release_date && (
