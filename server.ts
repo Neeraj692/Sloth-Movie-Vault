@@ -1,5 +1,5 @@
 import express from "express";
-import apiApp from "./api/index.js";
+import apiApp from "./api/[...slug].js";
 
 async function startServer() {
   const app = express();

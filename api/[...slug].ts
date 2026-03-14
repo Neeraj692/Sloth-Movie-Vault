@@ -65,10 +65,18 @@ async function getOrCreateUser(username: string) {
   return userRes.rows[0].id;
 }
 
+app.use((req, _res, next) => {
+  console.log("Catch-all route hit! req.url:", req.url, "req.path:", req.path, "req.query:", req.query);
+  next();
+});
+
 app.get(["/api/search", "/search"], async (req, res) => {
+  console.log("Search route hit! Query:", req.query);
   try {
     const { q } = req.query;
     if (!q) return res.json([]);
+    
+    console.log("TMDB_API_KEY available:", !!TMDB_API_KEY);
     
     // If we have TMDB API key, always search TMDB for best results
     if (TMDB_API_KEY) {
@@ -79,6 +87,7 @@ app.get(["/api/search", "/search"], async (req, res) => {
         let searchSuccess = false;
 
         if (isImdbId) {
+          console.log("Searching by IMDB ID:", queryStr);
           const findRes = await fetch(`https://api.themoviedb.org/3/find/${queryStr}?api_key=${TMDB_API_KEY}&external_source=imdb_id`);
           if (findRes.ok) {
             const findData = await findRes.json();
@@ -88,6 +97,7 @@ app.get(["/api/search", "/search"], async (req, res) => {
             console.error("TMDB find failed with status:", findRes.status);
           }
         } else {
+          console.log("Searching by text:", queryStr);
           const searchRes = await fetch(`https://api.themoviedb.org/3/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(queryStr)}&page=1`);
           if (searchRes.ok) {
             const searchData = await searchRes.json();
@@ -95,10 +105,13 @@ app.get(["/api/search", "/search"], async (req, res) => {
             searchSuccess = true;
           } else {
             console.error("TMDB search failed with status:", searchRes.status);
+            const errorText = await searchRes.text();
+            console.error("TMDB search error response:", errorText);
           }
         }
 
         if (searchSuccess) {
+          console.log("Search successful, returning", results.length, "results");
           return res.json(results.map((m: any) => ({
             id: isImdbId ? queryStr : m.id.toString(),
             title: m.title,
@@ -111,6 +124,8 @@ app.get(["/api/search", "/search"], async (req, res) => {
       } catch (err) {
         console.error("TMDB fetch error:", err);
       }
+    } else {
+      console.log("No TMDB_API_KEY found in environment variables");
     }
     
     // User requested to ONLY search from API, so return empty array instead of DB fallback.
