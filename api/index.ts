@@ -65,7 +65,7 @@ async function getOrCreateUser(username: string) {
   return userRes.rows[0].id;
 }
 
-app.get("/api/search", async (req, res) => {
+app.get(["/api/search", "/search"], async (req, res) => {
   try {
     const { q } = req.query;
     if (!q) return res.json([]);
@@ -121,7 +121,7 @@ app.get("/api/search", async (req, res) => {
   }
 });
 
-app.post("/api/users/:username/movies", async (req, res) => {
+app.post(["/api/users/:username/movies", "/users/:username/movies"], async (req, res) => {
   try {
     const { username } = req.params;
     const { movieId } = req.body; 
@@ -186,7 +186,7 @@ app.post("/api/users/:username/movies", async (req, res) => {
   }
 });
 
-app.get("/api/users/:username/movies", async (req, res) => {
+app.get(["/api/users/:username/movies", "/users/:username/movies"], async (req, res) => {
   try {
     const { username } = req.params;
     const userId = await getOrCreateUser(username);
@@ -231,7 +231,7 @@ app.get("/api/users/:username/movies", async (req, res) => {
   }
 });
 
-app.put("/api/users/:username/movies/:movieId/status", async (req, res) => {
+app.put(["/api/users/:username/movies/:movieId/status", "/users/:username/movies/:movieId/status"], async (req, res) => {
   try {
     const { username, movieId } = req.params;
     const { status } = req.body; // 'wishlist' or 'watched'
@@ -250,7 +250,7 @@ app.put("/api/users/:username/movies/:movieId/status", async (req, res) => {
   }
 });
 
-app.delete("/api/users/:username/movies/:movieId", async (req, res) => {
+app.delete(["/api/users/:username/movies/:movieId", "/users/:username/movies/:movieId"], async (req, res) => {
   try {
     const { username, movieId } = req.params;
     const userId = await getOrCreateUser(username);
