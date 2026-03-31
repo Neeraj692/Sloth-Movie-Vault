@@ -8,55 +8,57 @@ const app = express();
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
+let pool: pg.Pool | null = null;
+
 if (!process.env.DATABASE_URL) {
-  console.error("DATABASE_URL environment variable is missing. Please set it to connect to Neon DB.");
+  console.error("DATABASE_URL environment variable is missing. Database features will not work.");
+} else {
+  pool = new pg.Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
+  });
+
+  pool.on('error', (err) => {
+    console.error('Unexpected error on idle PostgreSQL client', err);
+  });
+
+  pool.query(`
+    CREATE TABLE IF NOT EXISTS Users (
+      id SERIAL PRIMARY KEY,
+      username VARCHAR(255) UNIQUE NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS Movies (
+      id VARCHAR(50) PRIMARY KEY,
+      imdb_id VARCHAR(50),
+      title TEXT NOT NULL,
+      poster_url TEXT,
+      imdb_rating VARCHAR(50),
+      year VARCHAR(50),
+      genre TEXT,
+      runtime INTEGER,
+      overview TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS UserMovies (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES Users(id) ON DELETE CASCADE,
+      movie_id VARCHAR(50) REFERENCES Movies(id) ON DELETE CASCADE,
+      status VARCHAR(50) DEFAULT 'wishlist',
+      remark TEXT,
+      added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(user_id, movie_id)
+    );
+  `).then(() => console.log("PostgreSQL Database initialized"))
+    .catch(err => console.error("Error initializing PostgreSQL database:", err));
 }
-
-const pool = new pg.Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
-});
-
-pool.on('error', (err) => {
-  console.error('Unexpected error on idle PostgreSQL client', err);
-});
-
-pool.query(`
-  CREATE TABLE IF NOT EXISTS Users (
-    id SERIAL PRIMARY KEY,
-    username VARCHAR(255) UNIQUE NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS Movies (
-    id VARCHAR(50) PRIMARY KEY,
-    imdb_id VARCHAR(50),
-    title TEXT NOT NULL,
-    poster_url TEXT,
-    imdb_rating VARCHAR(50),
-    year VARCHAR(50),
-    genre TEXT,
-    runtime INTEGER,
-    overview TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS UserMovies (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER REFERENCES Users(id) ON DELETE CASCADE,
-    movie_id VARCHAR(50) REFERENCES Movies(id) ON DELETE CASCADE,
-    status VARCHAR(50) DEFAULT 'wishlist',
-    remark TEXT,
-    added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(user_id, movie_id)
-  );
-
-`).then(() => console.log("PostgreSQL Database initialized"))
-  .catch(err => console.error("Error initializing PostgreSQL database:", err));
 
 const TMDB_API_KEY = process.env.TMDB_API_KEY || process.env.VITE_TMDB_API_KEY;
 
 // Get or create user
 async function getOrCreateUser(username: string) {
+  if (!pool) throw new Error("Database not configured. Please add DATABASE_URL.");
   const normalizedUsername = username.toLowerCase().trim();
   let userRes = await pool.query("SELECT id FROM Users WHERE username = $1", [normalizedUsername]);
   if (userRes.rows.length === 0) {
@@ -153,26 +155,28 @@ app.post(["/api/users/:username/movies", "/users/:username/movies"], async (req,
           const tmdbData = await tmdbRes.json();
           
           // Insert into Movies table using the requested movieId to maintain consistency with testcases
-          await pool.query(`
-            INSERT INTO Movies (id, imdb_id, title, poster_url, imdb_rating, year, genre, runtime, overview)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            ON CONFLICT (id) DO UPDATE SET
-              imdb_id = EXCLUDED.imdb_id,
-              genre = EXCLUDED.genre,
-              runtime = EXCLUDED.runtime,
-              overview = EXCLUDED.overview,
-              imdb_rating = EXCLUDED.imdb_rating
-          `, [
-            movieId.toString(),
-            tmdbData.imdb_id,
-            tmdbData.title,
-            tmdbData.poster_path ? `https://image.tmdb.org/t/p/w500${tmdbData.poster_path}` : "",
-            tmdbData.vote_average ? Number(tmdbData.vote_average).toFixed(1) : "N/A",
-            tmdbData.release_date ? tmdbData.release_date.substring(0, 4) : "N/A",
-            tmdbData.genres ? tmdbData.genres.map((g: any) => g.name).join(', ') : "N/A",
-            tmdbData.runtime || 0,
-            tmdbData.overview || ""
-          ]);
+          if (pool) {
+            await pool.query(`
+              INSERT INTO Movies (id, imdb_id, title, poster_url, imdb_rating, year, genre, runtime, overview)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+              ON CONFLICT (id) DO UPDATE SET
+                imdb_id = EXCLUDED.imdb_id,
+                genre = EXCLUDED.genre,
+                runtime = EXCLUDED.runtime,
+                overview = EXCLUDED.overview,
+                imdb_rating = EXCLUDED.imdb_rating
+            `, [
+              movieId.toString(),
+              tmdbData.imdb_id,
+              tmdbData.title,
+              tmdbData.poster_path ? `https://image.tmdb.org/t/p/w500${tmdbData.poster_path}` : "",
+              tmdbData.vote_average ? Number(tmdbData.vote_average).toFixed(1) : "N/A",
+              tmdbData.release_date ? tmdbData.release_date.substring(0, 4) : "N/A",
+              tmdbData.genres ? tmdbData.genres.map((g: any) => g.name).join(', ') : "N/A",
+              tmdbData.runtime || 0,
+              tmdbData.overview || ""
+            ]);
+          }
         }
       } catch (err) {
         console.error("Error fetching/saving movie details:", err);
