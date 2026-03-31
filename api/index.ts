@@ -186,6 +186,7 @@ app.post(["/api/users/:username/movies", "/users/:username/movies"], async (req,
 
     // Add to UserMovies
     try {
+      if (!pool) throw new Error("Database not configured");
       await pool.query(`
         INSERT INTO UserMovies (user_id, movie_id, status)
         VALUES ($1, $2, 'wishlist')
@@ -210,6 +211,7 @@ app.get(["/api/users/:username/movies", "/users/:username/movies"], async (req, 
     const { username } = req.params;
     const userId = await getOrCreateUser(username);
 
+    if (!pool) throw new Error("Database not configured");
     const result = await pool.query(`
       SELECT 
         um.movie_id, um.status, um.remark, um.added_date,
@@ -256,6 +258,7 @@ app.put(["/api/users/:username/movies/:movieId/status", "/users/:username/movies
     const { status } = req.body; // 'wishlist' or 'watched'
     const userId = await getOrCreateUser(username);
 
+    if (!pool) throw new Error("Database not configured");
     await pool.query(`
       UPDATE UserMovies 
       SET status = $1 
@@ -274,6 +277,7 @@ app.delete(["/api/users/:username/movies/:movieId", "/users/:username/movies/:mo
     const { username, movieId } = req.params;
     const userId = await getOrCreateUser(username);
 
+    if (!pool) throw new Error("Database not configured");
     await pool.query(`
       DELETE FROM UserMovies 
       WHERE user_id = $1 AND movie_id = $2
