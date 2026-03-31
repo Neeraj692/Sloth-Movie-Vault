@@ -1,5 +1,6 @@
 import express from "express";
-import apiApp from "./api/[...slug].js";
+import path from "path";
+import apiApp from "./api/[...slug].ts";
 
 async function startServer() {
   const app = express();
@@ -17,9 +18,10 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static("dist"));
+    const distPath = path.join(process.cwd(), "dist");
+    app.use(express.static(distPath));
     app.get("*", (_req, res) => {
-      res.sendFile("index.html", { root: "dist" });
+      res.sendFile(path.join(distPath, "index.html"));
     });
   }
 
