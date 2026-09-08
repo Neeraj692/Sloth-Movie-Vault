@@ -1,8 +1,9 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Routes, Route, useParams, useNavigate, Link } from 'react-router-dom';
-import { Film, Check, Trash2, Plus, Star, Search, Play, X, Calendar, Clock, Info, Users, Share2, MessageCircle, Tv } from 'lucide-react';
+import { Film, Check, Trash2, Plus, Star, Search, Play, X, Calendar, Clock, Info, Users, Share2, MessageCircle, Tv, LogOut } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { SearchResults } from './components/SearchResults';
+import { GoogleLogin } from '@react-oauth/google';
 
 interface Movie {
   id: string;
@@ -35,25 +36,48 @@ function Watchlist() {
   const [isSearching, setIsSearching] = useState(false);
   const searchRef = useRef<HTMLFormElement>(null);
 
+  const searchCache = useRef<Record<string, any[]>>({});
+  const [currentUser, setCurrentUser] = useState<any>(() => {
+    const saved = localStorage.getItem('movievault_user');
+    return saved ? JSON.parse(saved) : null;
+  });
+
   useEffect(() => {
+    const query = newMovieQuery.trim();
+    if (query.length === 0) {
+      setGlobalSearchResults([]);
+      return;
+    }
+
+    if (searchCache.current[query.toLowerCase()]) {
+      setGlobalSearchResults(searchCache.current[query.toLowerCase()]);
+      return;
+    }
+
+    let abortController = new AbortController();
     const delayDebounceFn = setTimeout(async () => {
-      if (newMovieQuery.trim().length > 0) {
-        setIsSearching(true);
-        try {
-          const res = await fetch(`/api/search?q=${encodeURIComponent(newMovieQuery)}`);
-          const data = await res.json();
-          setGlobalSearchResults(data);
-        } catch (error) {
+      setIsSearching(true);
+      try {
+        const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`, {
+          signal: abortController.signal
+        });
+        if (!res.ok) throw new Error('Search failed');
+        const data = await res.json();
+        searchCache.current[query.toLowerCase()] = data;
+        setGlobalSearchResults(data);
+      } catch (error: any) {
+        if (error.name !== 'AbortError') {
           console.error("Search error", error);
-        } finally {
-          setIsSearching(false);
         }
-      } else {
-        setGlobalSearchResults([]);
+      } finally {
+        setIsSearching(false);
       }
     }, 500);
 
-    return () => clearTimeout(delayDebounceFn);
+    return () => {
+      clearTimeout(delayDebounceFn);
+      abortController.abort();
+    };
   }, [newMovieQuery]);
 
   const fetchMovies = async () => {
@@ -104,35 +128,59 @@ function Watchlist() {
     setIsFetchingTrailer(false);
   };
 
+  const getAuthHeaders = (): HeadersInit => {
+    const token = localStorage.getItem('movievault_token');
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json'
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    return headers;
+  };
+
   const toggleStatus = async (movie: Movie, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     try {
       const newStatus = movie.status === 'wishlist' ? 'watched' : 'wishlist';
-      await fetch(`/api/users/${username}/movies/${movie.id}/status`, {
+      const res = await fetch(`/api/users/${username}/movies/${movie.id}/status`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ status: newStatus }),
       });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Failed to update status');
+      }
       
       if (selectedMovie && selectedMovie.id === movie.id) {
         setSelectedMovie({ ...selectedMovie, status: newStatus });
       }
       fetchMovies();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to update status', error);
+      alert(error.message || 'Failed to update status');
     }
   };
 
   const deleteMovie = async (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     try {
-      await fetch(`/api/users/${username}/movies/${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/users/${username}/movies/${id}`, { 
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Failed to delete movie');
+      }
       if (selectedMovie && selectedMovie.id === id) {
         setSelectedMovie(null);
       }
       fetchMovies();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to delete movie', error);
+      alert(error.message || 'Failed to delete movie');
     }
   };
 
@@ -143,7 +191,7 @@ function Watchlist() {
     try {
       const res = await fetch(`/api/users/${username}/movies`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ movieId: tmdbId }),
       });
       
@@ -201,6 +249,42 @@ function Watchlist() {
 
   const watchProviders = getWatchProviders();
 
+  const handleGoogleSuccess = async (credentialResponse: any) => {
+    try {
+      const res = await fetch('/api/auth/google', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credential: credentialResponse.credential, claimUsername: username })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Authentication failed');
+      
+      localStorage.setItem('movievault_token', data.token);
+      localStorage.setItem('movievault_username', data.user.username);
+      localStorage.setItem('movievault_user', JSON.stringify(data.user));
+      setCurrentUser(data.user);
+      
+      // If we claimed a username, we are already on that page.
+      // If they were assigned a new one, redirect.
+      if (data.user.username !== username) {
+        window.location.href = `/watchlist/${data.user.username}`;
+      } else {
+        fetchMovies();
+      }
+    } catch (err: any) {
+      console.error('Google sign in error:', err);
+      alert(err.message || 'Failed to sign in with Google');
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('movievault_token');
+    localStorage.removeItem('movievault_username');
+    localStorage.removeItem('movievault_user');
+    setCurrentUser(null);
+    window.location.href = '/';
+  };
+
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-zinc-200 font-sans selection:bg-yellow-500/30">
       {/* Header */}
@@ -223,13 +307,11 @@ function Watchlist() {
                 e.preventDefault();
                 const query = newMovieQuery.trim();
                 
-                // Check if it's a TMDB ID (just numbers)
                 if (/^\d+$/.test(query)) {
                   handleAddMovie(query);
                   return;
                 }
                 
-                // Check if it's an IMDb ID (tt followed by numbers)
                 const imdbMatch = query.match(/tt\d+/);
                 if (imdbMatch) {
                   handleAddMovie(imdbMatch[0]);
@@ -244,9 +326,7 @@ function Watchlist() {
                 <input
                   type="text"
                   value={newMovieQuery}
-                  onChange={(e) => {
-                    setNewMovieQuery(e.target.value);
-                  }}
+                  onChange={(e) => setNewMovieQuery(e.target.value)}
                   placeholder="Search movies to add..."
                   className="w-full pl-10 pr-4 py-2 bg-white/5 border border-white/10 rounded-full text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-yellow-500/50 focus:border-yellow-500 transition-all"
                 />
@@ -260,6 +340,29 @@ function Watchlist() {
               <button onClick={handleWhatsAppShare} className="p-2 hover:bg-[#25D366]/20 rounded-full transition-colors text-zinc-400 hover:text-[#25D366]" title="Share on WhatsApp">
                 <MessageCircle className="w-4 h-4" />
               </button>
+            </div>
+
+            {/* Auth / Profile Block */}
+            <div className="flex items-center gap-2">
+              {currentUser ? (
+                <div className="flex items-center gap-3 ml-2 bg-white/5 pl-2 pr-4 py-1.5 rounded-full border border-white/10">
+                  <img src={currentUser.picture || `https://ui-avatars.com/api/?name=${currentUser.name || currentUser.username}&background=EAB308&color=000`} alt="Profile" className="w-7 h-7 rounded-full" />
+                  <span className="text-sm font-medium text-white hidden sm:block">{currentUser.name || currentUser.username}</span>
+                  <button onClick={handleLogout} className="text-zinc-400 hover:text-white transition-colors ml-2" title="Sign Out">
+                    <LogOut className="w-4 h-4" />
+                  </button>
+                </div>
+              ) : (
+                <div className="ml-2 scale-90 sm:scale-100 origin-right">
+                  <GoogleLogin
+                    onSuccess={handleGoogleSuccess}
+                    onError={() => alert('Google login failed')}
+                    type="icon"
+                    theme="filled_black"
+                    shape="circle"
+                  />
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -715,11 +818,14 @@ function Watchlist() {
 
 function Home() {
   const [username, setUsername] = useState('');
+  const [error, setError] = useState('');
   const navigate = useNavigate();
 
   useEffect(() => {
     const savedUsername = localStorage.getItem('movievault_username');
-    if (savedUsername) {
+    // We only auto-redirect if they have a token or just a username
+    // But it's safer to let them click since we added Google Login
+    if (savedUsername && localStorage.getItem('movievault_token')) {
       navigate(`/watchlist/${savedUsername}`);
     }
   }, [navigate]);
@@ -728,8 +834,30 @@ function Home() {
     e.preventDefault();
     if (username.trim()) {
       const normalized = username.trim().toLowerCase();
+      // For guest access, we don't set a token, just the username
       localStorage.setItem('movievault_username', normalized);
       navigate(`/watchlist/${normalized}`);
+    }
+  };
+
+  const handleGoogleSuccess = async (credentialResponse: any) => {
+    try {
+      setError('');
+      const res = await fetch('/api/auth/google', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credential: credentialResponse.credential })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Authentication failed');
+      
+      localStorage.setItem('movievault_token', data.token);
+      localStorage.setItem('movievault_username', data.user.username);
+      localStorage.setItem('movievault_user', JSON.stringify(data.user));
+      navigate(`/watchlist/${data.user.username}`);
+    } catch (err: any) {
+      console.error('Google sign in error:', err);
+      setError(err.message || 'Failed to sign in with Google');
     }
   };
 
@@ -753,8 +881,32 @@ function Home() {
         <h1 className="text-3xl font-extrabold text-center text-white mb-2 tracking-tight">
           Movie<span className="text-yellow-500">Vault</span> 🦥
         </h1>
-        <p className="text-zinc-400 text-center mb-8">Enter a username to view or create your smart watchlist.</p>
+        <p className="text-zinc-400 text-center mb-8">Sign in to manage your smart watchlist, or view a public one.</p>
         
+        {error && (
+          <div className="mb-4 p-3 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl text-sm text-center">
+            {error}
+          </div>
+        )}
+
+        <div className="flex justify-center mb-6">
+          <GoogleLogin
+            onSuccess={handleGoogleSuccess}
+            onError={() => {
+              console.log('Login Failed');
+              setError('Google login failed. Please try again.');
+            }}
+            theme="filled_black"
+            shape="pill"
+          />
+        </div>
+
+        <div className="relative flex py-5 items-center">
+            <div className="flex-grow border-t border-white/10"></div>
+            <span className="flex-shrink-0 mx-4 text-zinc-500 text-sm">or enter public username</span>
+            <div className="flex-grow border-t border-white/10"></div>
+        </div>
+
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <input
@@ -768,9 +920,9 @@ function Home() {
           </div>
           <button
             type="submit"
-            className="w-full py-3 bg-yellow-500 hover:bg-yellow-400 text-black font-bold rounded-xl transition-all shadow-lg shadow-yellow-500/20"
+            className="w-full py-3 bg-white/5 hover:bg-white/10 text-white font-bold rounded-xl transition-all border border-white/10"
           >
-            Go to Watchlist
+            View Public Watchlist
           </button>
         </form>
       </motion.div>

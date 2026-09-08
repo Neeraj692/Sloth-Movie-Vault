@@ -1,6 +1,7 @@
 import express from "express";
 import pg from "pg";
 import dotenv from "dotenv";
+import { OAuth2Client } from 'google-auth-library';
 
 dotenv.config();
 
@@ -9,6 +10,7 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 let pool: pg.Pool | null = null;
+const googleClient = new OAuth2Client(process.env.VITE_GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID);
 
 if (!process.env.DATABASE_URL) {
   console.error("DATABASE_URL environment variable is missing. Database features will not work.");
@@ -28,6 +30,11 @@ if (!process.env.DATABASE_URL) {
       username VARCHAR(255) UNIQUE NOT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
+
+    ALTER TABLE Users ADD COLUMN IF NOT EXISTS google_id VARCHAR(255) UNIQUE;
+    ALTER TABLE Users ADD COLUMN IF NOT EXISTS email VARCHAR(255);
+    ALTER TABLE Users ADD COLUMN IF NOT EXISTS name VARCHAR(255);
+    ALTER TABLE Users ADD COLUMN IF NOT EXISTS picture TEXT;
 
     CREATE TABLE IF NOT EXISTS Movies (
       id VARCHAR(50) PRIMARY KEY,
@@ -55,6 +62,108 @@ if (!process.env.DATABASE_URL) {
 }
 
 const TMDB_API_KEY = process.env.TMDB_API_KEY || process.env.VITE_TMDB_API_KEY;
+
+// Verify user authorization for state modifications
+async function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const username = req.params.username;
+  if (!username) return next();
+  
+  const norm = username.toLowerCase().trim();
+  if (!pool) return next();
+
+  try {
+    const userRes = await pool.query("SELECT * FROM Users WHERE username = $1", [norm]);
+    const user = userRes.rows[0];
+    
+    // If user doesn't exist, allow creating it without auth for backward compatibility
+    if (!user) return next();
+    
+    // If user has no google_id, it is a public account (backward compatibility)
+    if (!user.google_id) return next();
+
+    // User is protected, check token
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ error: "Unauthorized. This watchlist is protected by Google Sign-In." });
+    }
+
+    const token = authHeader.split(" ")[1];
+    const ticket = await googleClient.verifyIdToken({
+        idToken: token,
+        audience: process.env.VITE_GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID,
+    });
+    
+    const payload = ticket.getPayload();
+    if (payload?.sub !== user.google_id) {
+      return res.status(403).json({ error: "Forbidden. You are not the owner of this watchlist." });
+    }
+    
+    next();
+  } catch (error) {
+    console.error("Auth error:", error);
+    return res.status(401).json({ error: "Invalid or expired authentication token." });
+  }
+}
+
+// Auth Route
+app.post("/api/auth/google", async (req, res) => {
+  try {
+    const { credential, claimUsername } = req.body;
+    if (!pool) throw new Error("Database not configured");
+
+    const ticket = await googleClient.verifyIdToken({
+      idToken: credential,
+      audience: process.env.VITE_GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID,
+    });
+    const payload = ticket.getPayload();
+    if (!payload) throw new Error("Invalid payload");
+
+    const googleId = payload.sub;
+    const email = payload.email || '';
+    const name = payload.name || '';
+    const picture = payload.picture || '';
+
+    // 1. Check if googleId already exists
+    let userRes = await pool.query("SELECT * FROM Users WHERE google_id = $1", [googleId]);
+    if (userRes.rows.length > 0) {
+      return res.json({ user: userRes.rows[0], token: credential });
+    }
+
+    // 2. Claim existing username if it has no google_id
+    if (claimUsername) {
+      const norm = claimUsername.toLowerCase().trim();
+      let claimRes = await pool.query("SELECT * FROM Users WHERE username = $1", [norm]);
+      if (claimRes.rows.length > 0 && !claimRes.rows[0].google_id) {
+         const updated = await pool.query(
+           "UPDATE Users SET google_id = $1, email = $2, name = $3, picture = $4 WHERE username = $5 RETURNING *",
+           [googleId, email, name, picture, norm]
+         );
+         return res.json({ user: updated.rows[0], token: credential });
+      }
+    }
+    
+    // 3. Create a new user
+    let baseUsername = email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '');
+    let finalUsername = baseUsername;
+    let counter = 1;
+    while (true) {
+       let check = await pool.query("SELECT id FROM Users WHERE username = $1", [finalUsername]);
+       if (check.rows.length === 0) break;
+       finalUsername = `${baseUsername}${counter}`;
+       counter++;
+    }
+    
+    let newRes = await pool.query(
+      "INSERT INTO Users (username, google_id, email, name, picture) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+      [finalUsername, googleId, email, name, picture]
+    );
+    return res.json({ user: newRes.rows[0], token: credential });
+
+  } catch (error) {
+    console.error("Auth verify error:", error);
+    res.status(401).json({ error: "Authentication failed" });
+  }
+});
 
 // Get or create user
 async function getOrCreateUser(username: string) {
@@ -138,7 +247,7 @@ app.get(["/api/search", "/search"], async (req, res) => {
   }
 });
 
-app.post(["/api/users/:username/movies", "/users/:username/movies"], async (req, res) => {
+app.post(["/api/users/:username/movies", "/users/:username/movies"], requireAuth, async (req, res) => {
   try {
     const { username } = req.params;
     const { movieId } = req.body; 
@@ -252,7 +361,7 @@ app.get(["/api/users/:username/movies", "/users/:username/movies"], async (req, 
   }
 });
 
-app.put(["/api/users/:username/movies/:movieId/status", "/users/:username/movies/:movieId/status"], async (req, res) => {
+app.put(["/api/users/:username/movies/:movieId/status", "/users/:username/movies/:movieId/status"], requireAuth, async (req, res) => {
   try {
     const { username, movieId } = req.params;
     const { status } = req.body; // 'wishlist' or 'watched'
@@ -272,7 +381,7 @@ app.put(["/api/users/:username/movies/:movieId/status", "/users/:username/movies
   }
 });
 
-app.delete(["/api/users/:username/movies/:movieId", "/users/:username/movies/:movieId"], async (req, res) => {
+app.delete(["/api/users/:username/movies/:movieId", "/users/:username/movies/:movieId"], requireAuth, async (req, res) => {
   try {
     const { username, movieId } = req.params;
     const userId = await getOrCreateUser(username);
