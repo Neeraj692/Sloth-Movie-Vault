@@ -20,9 +20,8 @@ export const AdSense: React.FC<AdSenseProps> = ({
     }
   }, []);
 
-  // Use the env variable if configured, otherwise fallback to a placeholder text 
-  // so the user knows they need to configure it later.
-  const clientId = import.meta.env.VITE_GOOGLE_ADSENSE_CLIENT_ID || "ca-pub-YOUR_PUBLISHER_ID_HERE";
+  // Use the env variable if configured, otherwise fallback to the provided client ID
+  const clientId = import.meta.env.VITE_GOOGLE_ADSENSE_CLIENT_ID || "ca-pub-1046049479859525";
 
   return (
     <ins
